@@ -1,0 +1,123 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "screenflare",
+  "title": "Screenflare",
+  "description": "Capture screenshots and screen recordings with Screenflare",
+  "icon": "icon.png",
+  "author": "kvoon3",
+  "license": "MIT",
+  "categories": [
+    "Media",
+    "Productivity"
+  ],
+  "platforms": [
+    "macOS"
+  ],
+  "keywords": [
+    "screenflare",
+    "screenshot",
+    "screen recording",
+    "capture",
+    "ocr",
+    "screen capture"
+  ],
+  "commands": [
+    {
+      "name": "capture-area",
+      "title": "Capture Area Screenshot",
+      "subtitle": "Screenflare",
+      "description": "Drag out a region, then copy it to the clipboard",
+      "mode": "no-view"
+    },
+    {
+      "name": "capture-fullscreen",
+      "title": "Capture Fullscreen Screenshot",
+      "subtitle": "Screenflare",
+      "description": "Capture the whole display straight to the clipboard",
+      "mode": "no-view"
+    },
+    {
+      "name": "capture-text",
+      "title": "Capture Text",
+      "subtitle": "Screenflare",
+      "description": "Drag out a region and copy the text inside it",
+      "mode": "no-view"
+    },
+    {
+      "name": "record-area",
+      "title": "Record Area",
+      "subtitle": "Screenflare",
+      "description": "Start a screen recording of a region",
+      "mode": "no-view"
+    },
+    {
+      "name": "record-display",
+      "title": "Record Display",
+      "subtitle": "Screenflare",
+      "description": "Start a screen recording of a display",
+      "mode": "no-view"
+    },
+    {
+      "name": "record-window",
+      "title": "Record Window",
+      "subtitle": "Screenflare",
+      "description": "Pick a window to record",
+      "mode": "no-view"
+    },
+    {
+      "name": "toggle-recording",
+      "title": "Toggle Recording",
+      "subtitle": "Screenflare",
+      "description": "Stop the current recording, or start a new one",
+      "mode": "no-view"
+    },
+    {
+      "name": "show-capture-bar",
+      "title": "Show Capture Bar",
+      "subtitle": "Screenflare",
+      "description": "Bring up Screenflare's Record or Capture bar",
+      "mode": "no-view"
+    },
+    {
+      "name": "library",
+      "title": "Browse Library",
+      "subtitle": "Screenflare",
+      "description": "Browse recordings and screenshots from the Screenflare library",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "recordingsFolder",
+      "title": "Recordings Folder",
+      "description": "Where Screenflare stores recordings. Leave empty for ~/Screenflare/recordings",
+      "type": "textfield",
+      "required": false
+    },
+    {
+      "name": "screenshotsFolder",
+      "title": "Screenshots Folder",
+      "description": "Where Screenflare stores screenshots. Leave empty for ~/Screenflare/screenshots",
+      "type": "textfield",
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^2.4.1"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "22.19.17",
+    "@types/react": "19.0.10",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.6",
+    "typescript": "^5.6.0"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix",
+    "publish": "npx @raycast/api@latest publish"
+  }
+}
