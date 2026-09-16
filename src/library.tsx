@@ -94,6 +94,8 @@ function CaptureActions() {
     <ActionPanel.Section>
       <Action title="Capture Area Screenshot" icon={Icon.Crop} onAction={() => capture("area")} />
       <Action title="Capture Fullscreen Screenshot" icon={Icon.Desktop} onAction={() => capture("screenshot")} />
+      <Action title="Capture Window Screenshot" icon={Icon.AppWindow} onAction={() => capture("window-shot")} />
+      <Action title="Scrolling Capture" icon={Icon.ArrowDown} onAction={() => capture("scrolling")} />
       <Action title="Capture Text" icon={Icon.Text} onAction={captureText} />
       <Action title="Record Display" icon={Icon.Video} onAction={() => capture("recording")} />
       <Action title="Show Capture Bar" icon={Icon.Window} onAction={() => capture("bar")} />

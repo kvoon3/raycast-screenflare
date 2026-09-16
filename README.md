@@ -8,6 +8,8 @@ recordings, and browse your Screenflare library, without leaving Raycast.
 | Command | Description |
 | --- | --- |
 | Capture Area Screenshot | Drag out a region, then copy it to the clipboard |
+| Capture Window Screenshot | Pick a window and capture it |
+| Scrolling Capture | Capture a whole page or thread as it scrolls |
 | Capture Fullscreen Screenshot | Capture the whole display straight to the clipboard |
 | Capture Text | Drag out a region and copy the text inside it (OCR) |
 | Record Area | Start a screen recording of a region |
@@ -23,14 +25,9 @@ Screenflare has no URL scheme, no AppleScript dictionary, no CLI and no Shortcut
 is its menu bar. Commands drive Screenflare through `System Events` by pressing menu items directly, which stays
 correct even if you rebind Screenflare's shortcuts.
 
-Two consequences worth knowing:
-
-- **Accessibility permission is required** for Raycast (System Settings ▸ Privacy & Security ▸ Accessibility) so it can
-  press Screenflare's menus.
-- **Capture Area** borrows the `⌘⇧4` chord, because Screenflare starts its region selection from a global hotkey rather
-  than a menu item. This lands on Screenflare when the matching macOS shortcut is switched off in
-  Keyboard ▸ Keyboard Shortcuts ▸ Screenshots — the same setup Screenflare's onboarding asks for. If you leave the
-  system shortcut on, you get the standard macOS capture instead.
+**Accessibility permission is required** for Raycast (System Settings ▸ Privacy & Security ▸ Accessibility) so it can
+press Screenflare's menus. No other setup is needed — commands never synthesise keystrokes, so they are unaffected by
+how you have configured macOS' own screenshot shortcuts.
 
 Captures still open in Screenflare's editor when they need your input (a region to drag, a text selection to confirm).
 
@@ -52,6 +49,7 @@ npm run build   # ray build
 ## Requirements
 
 - macOS 15 or later
+- Screenflare 0.1.21 or later (for Capture Window and Scrolling Capture)
 - [Screenflare](https://screenflare.app) installed in `/Applications`
 
 ## License

@@ -71,7 +71,17 @@ export const isRecording = async () =>
   ).stdout.trim() === "true";
 
 type Capture =
-  "recording" | "stop-recording" | "window" | "screenshot" | "area" | "text" | "history" | "recording-history" | "bar";
+  | "recording"
+  | "stop-recording"
+  | "window"
+  | "screenshot"
+  | "area"
+  | "text"
+  | "window-shot"
+  | "scrolling"
+  | "history"
+  | "recording-history"
+  | "bar";
 
 const MENU_ITEMS: Record<Capture, string[]> = {
   recording: ["File", "Record Display"],
@@ -80,32 +90,24 @@ const MENU_ITEMS: Record<Capture, string[]> = {
   screenshot: ["File", "Capture Fullscreen"],
   area: ["File", "Capture Screenshot"],
   text: ["File", "Capture Text"],
+  "window-shot": ["File", "Capture Window"],
+  scrolling: ["File", "Scrolling Capture"],
   history: ["File", "Screenshot History…"],
   "recording-history": ["File", "Recording History…"],
   bar: ["File", "Record or Capture…"],
 };
 
 /**
- * Screenflare can't be scripted into an area capture, so borrow macOS' ⌘⇧4:
- * it lands on Screenflare whenever the matching system shortcut is switched off
- * in Keyboard ▸ Keyboard Shortcuts ▸ Screenshots, as Screenflare's own
- * onboarding asks, and degrades to the normal macOS capture otherwise.
+ * Screenflare's own "Capture Screenshot" menu item raises the region-selection
+ * overlay itself, so no synthetic ⌘⇧4 is needed. This also keeps the command
+ * independent of whether macOS or Screenflare owns the screenshot shortcuts.
  */
-async function areaChord() {
-  await run("osascript", [
-    "-e",
-    `tell application "System Events" to keystroke "4" using {command down, shift down}`,
-    "-e",
-    `tell application "System Events" to key code 53`, // dismiss macOS' own screenshot overlay
-  ]);
-}
 
 export async function capture(what: Capture) {
   try {
     await ensureTrusted();
     await ensureRunning();
     await menu(...MENU_ITEMS[what]);
-    if (what === "area") await areaChord();
     return true;
   } catch (error) {
     await showToast({ style: Toast.Style.Failure, title: "Screenflare failed", message: String(error) });

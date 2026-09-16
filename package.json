@@ -37,6 +37,20 @@
       "mode": "no-view"
     },
     {
+      "name": "capture-window",
+      "title": "Capture Window Screenshot",
+      "subtitle": "Screenflare",
+      "description": "Pick a window and capture it",
+      "mode": "no-view"
+    },
+    {
+      "name": "capture-scrolling",
+      "title": "Scrolling Capture",
+      "subtitle": "Screenflare",
+      "description": "Capture a whole page or thread as it scrolls",
+      "mode": "no-view"
+    },
+    {
       "name": "capture-text",
       "title": "Capture Text",
       "subtitle": "Screenflare",
