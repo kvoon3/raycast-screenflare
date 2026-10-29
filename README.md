@@ -1,6 +1,6 @@
 # Screenflare Capture
 
-A [Raycast](https://raycast.com) extension for [Screenflare](https://screenflare.app) — take screenshots and screen
+A [Raycast](https://raycast.com) extension for [Screenflare](https://screenflare.app). Take screenshots and screen
 recordings, and browse your Screenflare library, without leaving Raycast.
 
 ## Commands
@@ -21,13 +21,16 @@ recordings, and browse your Screenflare library, without leaving Raycast.
 
 ## How it works
 
-Screenflare has no URL scheme, no AppleScript dictionary, no CLI and no Shortcuts actions, so the only automation hook
+Screenflare has no automation URL scheme, no AppleScript dictionary, no CLI and no Shortcuts actions, so the only hook
 is its menu bar. Commands drive Screenflare through `System Events` by pressing menu items directly, which stays
-correct even if you rebind Screenflare's shortcuts.
+correct even if you rebind Screenflare's shortcuts. Menu titles are read in Screenflare's own UI language, so
+localized builds work too.
 
-**Accessibility permission is required** for Raycast (System Settings ▸ Privacy & Security ▸ Accessibility) so it can
-press Screenflare's menus. No other setup is needed — commands never synthesise keystrokes, so they are unaffected by
-how you have configured macOS' own screenshot shortcuts.
+**Accessibility and Automation permissions are required** for Raycast. macOS asks for Automation control of
+`System Events` the first time a command runs, so allow Raycast in System Settings ▸ Privacy & Security ▸ Automation.
+Grant Accessibility in System Settings ▸ Privacy & Security ▸ Accessibility so Raycast can press Screenflare's menus.
+Commands never synthesise keystrokes, so they are unaffected by how you have configured macOS' own screenshot
+shortcuts.
 
 Captures still open in Screenflare's editor when they need your input (a region to drag, a text selection to confirm).
 
@@ -39,7 +42,7 @@ Screenflare's library.
 
 ## Install
 
-The extension isn't in the Raycast Store — install it from source:
+The extension isn't in the Raycast Store. Install it from source:
 
 ```sh
 git clone https://github.com/kvoon3/raycast-screenflare.git
@@ -49,7 +52,7 @@ npm run dev     # loads the extension into Raycast locally
 ```
 
 `npm run dev` keeps running and installs the extension into your local Raycast under **Screenflare**. Grant Raycast
-Accessibility permission on first capture — see *How it works* above.
+Accessibility and Automation permissions on first capture, as described in *How it works* above.
 
 ## Development
 

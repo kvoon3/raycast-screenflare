@@ -1,41 +1,79 @@
-import { Action, ActionPanel, Icon, List, getPreferenceValues } from "@raycast/api";
-import { execFile } from "node:child_process";
+import { Action, ActionPanel, Icon, Keyboard, List, showToast, Toast } from "@raycast/api";
+import path from "node:path";
 import { useEffect, useState } from "react";
 import {
   capture,
   captureText,
+  explainError,
   listRecordings,
   listScreenshots,
   openRecording,
+  type Library,
   type Recording,
   type Screenshot,
 } from "./screenflare";
 
-const open = (file: string) => new Promise<void>((ok, fail) => execFile("open", [file], (e) => (e ? fail(e) : ok())));
+type View = "recordings" | "screenshots";
+
+const isView = (value: string): value is View => value === "recordings" || value === "screenshots";
 
 export default function Command() {
-  const prefs = getPreferenceValues<{ defaultView?: string }>();
-  const [recordings, setRecordings] = useState<Recording[]>();
-  const [screenshots, setScreenshots] = useState<Screenshot[]>();
-  const [view, setView] = useState(prefs.defaultView === "screenshots" ? "screenshots" : "recordings");
+  const [recordings, setRecordings] = useState<Library<Recording>>();
+  const [screenshots, setScreenshots] = useState<Library<Screenshot>>();
+  const [view, setView] = useState<View>("recordings");
+  const [reloadToken, setReloadToken] = useState(0);
+  const reload = () => setReloadToken((token) => token + 1);
 
   useEffect(() => {
-    listRecordings().then(setRecordings);
-    listScreenshots().then(setScreenshots);
-  }, []);
+    let active = true;
+    setRecordings(undefined);
+    setScreenshots(undefined);
+    Promise.all([listRecordings(), listScreenshots()])
+      .then(([recordingResult, screenshotResult]) => {
+        if (!active) return;
+        setRecordings(recordingResult);
+        setScreenshots(screenshotResult);
+        const problems = [...recordingResult.problems, ...screenshotResult.problems];
+        if (problems.length > 0 && recordingResult.items.length + screenshotResult.items.length > 0) {
+          void showToast({
+            style: Toast.Style.Failure,
+            title: `Skipped ${problems.length} unreadable capture${problems.length === 1 ? "" : "s"}`,
+            message: problems[0],
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        const message = explainError(error);
+        setRecordings({ items: [], problems: [], error: message });
+        setScreenshots({ items: [], problems: [], error: message });
+        void showToast({ style: Toast.Style.Failure, title: "Could not read the library", message });
+      });
+    return () => {
+      active = false;
+    };
+  }, [reloadToken]);
+
+  const activeResult = view === "recordings" ? recordings : screenshots;
 
   return (
     <List
       isLoading={!recordings || !screenshots}
       searchBarAccessory={
-        <List.Dropdown tooltip="Library" value={view} onChange={setView}>
+        <List.Dropdown
+          tooltip="Library"
+          value={view}
+          onChange={(value) => {
+            if (isView(value)) setView(value);
+          }}
+        >
           <List.Dropdown.Item title="Recordings" value="recordings" />
           <List.Dropdown.Item title="Screenshots" value="screenshots" />
         </List.Dropdown>
       }
     >
       {view === "recordings"
-        ? recordings?.map((r) => (
+        ? recordings?.items.map((r) => (
             <List.Item
               key={r.dir}
               icon={{ source: `${r.dir}/thumbnail.png` }}
@@ -50,59 +88,88 @@ export default function Command() {
                 <ActionPanel>
                   <Action title="Open in Screenflare" icon={Icon.Pencil} onAction={() => openRecording(r.dir)} />
                   <Action.ShowInFinder path={r.dir} />
-                  <Action.OpenWith path={r.dir} />
-                  <CaptureActions />
+                  <Action.OpenWith path={path.join(r.dir, "screen.mov")} />
+                  <CaptureActions onRefresh={reload} />
                 </ActionPanel>
               }
             />
           ))
-        : screenshots?.map((s) => (
+        : screenshots?.items.map((s) => (
             <List.Item
               key={s.dir}
               icon={{ source: s.thumb }}
               title={new Date(s.meta.createdAt).toLocaleString()}
-              subtitle={s.meta.kind}
+              subtitle={humanize(s.meta.kind)}
               accessories={[
                 { text: `${s.meta.pixelWidth}×${s.meta.pixelHeight}` },
                 { date: new Date(s.meta.createdAt) },
               ]}
               actions={
                 <ActionPanel>
-                  <Action title="Open Screenshot" icon={Icon.Image} onAction={() => open(s.image)} />
+                  <Action.Open target={s.image} title="Open Screenshot" icon={Icon.Image} />
                   <Action.ShowInFinder path={s.dir} />
-                  <CaptureActions />
+                  <CaptureActions onRefresh={reload} />
                 </ActionPanel>
               }
             />
           ))}
-      {libraryIsEmpty(view, recordings, screenshots) && (
-        <List.EmptyView
-          title={view === "recordings" ? "No Recordings" : "No Screenshots"}
-          description="Captures show up here once you make one."
-        />
-      )}
+      <EmptyLibrary result={activeResult} view={view} />
     </List>
   );
 }
 
-/** Screenflare writes thumbnails but the full-quality PNG is a separate export elsewhere; open what exists. */
-const libraryIsEmpty = (view: string, r?: Recording[], s?: Screenshot[]) =>
-  (view === "recordings" ? r : s)?.length === 0;
+function EmptyLibrary({ result, view }: { result?: Library<Recording> | Library<Screenshot>; view: View }) {
+  if (!result || result.items.length > 0) return null;
+  if (result.error) {
+    return (
+      <List.EmptyView
+        icon={Icon.ExclamationMark}
+        title={view === "recordings" ? "Could Not Read Recordings" : "Could Not Read Screenshots"}
+        description={result.error}
+      />
+    );
+  }
+  if (result.problems.length > 0) {
+    return (
+      <List.EmptyView
+        icon={Icon.ExclamationMark}
+        title={view === "recordings" ? "No Readable Recordings" : "No Readable Screenshots"}
+        description={result.problems.slice(0, 3).join("\n")}
+      />
+    );
+  }
+  return (
+    <List.EmptyView
+      title={view === "recordings" ? "No Recordings" : "No Screenshots"}
+      description="Captures show up here once you make one."
+    />
+  );
+}
 
-function CaptureActions() {
+function CaptureActions({ onRefresh }: { onRefresh: () => void }) {
   return (
     <ActionPanel.Section>
-      <Action title="Capture Area Screenshot" icon={Icon.Crop} onAction={() => capture("area")} />
-      <Action title="Capture Fullscreen Screenshot" icon={Icon.Desktop} onAction={() => capture("screenshot")} />
-      <Action title="Capture Window Screenshot" icon={Icon.AppWindow} onAction={() => capture("window-shot")} />
-      <Action title="Scrolling Capture" icon={Icon.ArrowDown} onAction={() => capture("scrolling")} />
+      <Action title="Capture Area Screenshot" icon={Icon.Crop} onAction={() => capture("captureArea")} />
+      <Action title="Capture Fullscreen Screenshot" icon={Icon.Desktop} onAction={() => capture("captureFullscreen")} />
+      <Action title="Capture Window Screenshot" icon={Icon.AppWindow} onAction={() => capture("captureWindow")} />
+      <Action title="Scrolling Capture" icon={Icon.ArrowDown} onAction={() => capture("scrollingCapture")} />
       <Action title="Capture Text" icon={Icon.Text} onAction={captureText} />
-      <Action title="Record Display" icon={Icon.Video} onAction={() => capture("recording")} />
-      <Action title="Show Capture Bar" icon={Icon.Window} onAction={() => capture("bar")} />
-      <Action title="Screenshot History" icon={Icon.Image} onAction={() => capture("history")} />
-      <Action title="Recording History" icon={Icon.Video} onAction={() => capture("recording-history")} />
+      <Action title="Record Display" icon={Icon.Video} onAction={() => capture("recordDisplay")} />
+      <Action title="Show Capture Bar" icon={Icon.Window} onAction={() => capture("captureBar")} />
+      <Action title="Screenshot History" icon={Icon.Image} onAction={() => capture("screenshotHistory")} />
+      <Action title="Recording History" icon={Icon.Video} onAction={() => capture("recordingHistory")} />
+      <Action
+        title="Refresh Library"
+        icon={Icon.ArrowClockwise}
+        shortcut={Keyboard.Shortcut.Common.Refresh}
+        onAction={onRefresh}
+      />
     </ActionPanel.Section>
   );
+}
+
+function humanize(text: string) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function formatDuration(seconds: number) {

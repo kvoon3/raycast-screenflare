@@ -1,9 +1,19 @@
-import { showHUD } from "@raycast/api";
-import { capture, isRecording } from "./screenflare";
+import { showHUD, showToast, Toast } from "@raycast/api";
+import { capture, explainError, isRecording } from "./screenflare";
 
 export default async function Command() {
-  const recording = await isRecording().catch(() => false);
-  if (await capture(recording ? "stop-recording" : "recording")) {
-    await showHUD(recording ? "Recording stopped" : "Recording display");
+  let recording: boolean;
+  try {
+    recording = await isRecording();
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Could not read Screenflare's state",
+      message: explainError(error),
+    });
+    return;
+  }
+  if (await capture(recording ? "stopRecording" : "recordDisplay")) {
+    await showHUD(recording ? "Stopping recording" : "Starting recording");
   }
 }

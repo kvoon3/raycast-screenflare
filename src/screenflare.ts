@@ -1,15 +1,21 @@
-import { Clipboard, getPreferenceValues, showToast, Toast } from "@raycast/api";
+import { Clipboard, closeMainWindow, getPreferenceValues, showToast, Toast } from "@raycast/api";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { parseLanguageList, selectLanguage } from "./menu-locale";
 
 const run = promisify(execFile);
 
-export const APP = "/Applications/Screenflare.app";
+const APP = "/Applications/Screenflare.app";
+const INFO_PLIST = path.join(APP, "Contents/Info.plist");
+const RESOURCES = path.join(APP, "Contents/Resources");
 
-/** Screenflare needs Accessibility to be driven from outside; ask once, up front. */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** Screenflare needs Accessibility to be driven from outside; fail before the menu press with a clear message. */
 async function ensureTrusted() {
   const { stdout } = await run("osascript", ["-e", `tell application "System Events" to return UI elements enabled`]);
   if (stdout.trim() !== "true") {
@@ -19,18 +25,15 @@ async function ensureTrusted() {
   }
 }
 
-/** Launching a bare `open <app>` works while the app is already running, so force a cold start. */
 async function ensureRunning() {
   if (await isRunning()) return;
   await run("open", ["-g", "-a", APP]);
-  for (let i = 0; i < 50; i++) {
-    if (await isRunning()) return sleep(1500);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (await isRunning()) return;
     await sleep(200);
   }
-  throw new Error("Screenflare did not start");
+  throw new Error(`Screenflare did not start from ${APP}`);
 }
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const isRunning = async () =>
   (
@@ -40,76 +43,213 @@ const isRunning = async () =>
     ])
   ).stdout.trim() === "true";
 
+type MenuAction =
+  | "recordDisplay"
+  | "recordArea"
+  | "stopRecording"
+  | "recordWindow"
+  | "captureFullscreen"
+  | "captureArea"
+  | "captureText"
+  | "captureWindow"
+  | "scrollingCapture"
+  | "screenshotHistory"
+  | "recordingHistory"
+  | "captureBar";
+
 /**
- * Screenflare ships no URL scheme, AppleScript dictionary or CLI, so its menus
- * are the only hook. AXPress is exact — unlike synthetic keystrokes, which
- * break when the user rebinds a shortcut.
+ * Screenflare has no automation API, so its menus are the only hook. Titles are
+ * read from the app's own localization rather than hardcoded English.
  */
-async function menu(...items: string[]) {
-  const [bar, ...rest] = items;
-  const lines = [
-    `tell application "System Events" to tell process "Screenflare"`,
-    `set target to menu bar item "${bar}" of menu bar 1`,
-    ...rest.slice(0, -1).map((i) => `set target to menu item "${i}" of menu 1 of target`),
-    `set target to menu item "${rest[rest.length - 1]}" of menu 1 of target`,
-    `if not (enabled of target) then error "${items.join(" ▸ ")} is unavailable right now"`,
-    `click target`,
-    `end tell`,
-  ];
-  await run(
-    "osascript",
-    lines.flatMap((l) => ["-e", l]),
-  );
-}
-
-export const isRecording = async () =>
-  (
-    await run("osascript", [
-      "-e",
-      `tell application "System Events" to tell process "Screenflare" to return enabled of menu item "Stop Recording" of menu 1 of menu bar item "File" of menu bar 1`,
-    ]).catch(() => ({ stdout: "false" }))
-  ).stdout.trim() === "true";
-
-type Capture =
-  | "recording"
-  | "record-area"
-  | "stop-recording"
-  | "window"
-  | "screenshot"
-  | "area"
-  | "text"
-  | "window-shot"
-  | "scrolling"
-  | "history"
-  | "recording-history"
-  | "bar";
-
-const MENU_ITEMS: Record<Capture, string[]> = {
-  recording: ["File", "Record Display"],
-  "record-area": ["File", "Record Area"],
-  "stop-recording": ["File", "Stop Recording"],
-  window: ["File", "Record Window"],
-  screenshot: ["File", "Capture Fullscreen"],
-  area: ["File", "Capture Screenshot"],
-  text: ["File", "Capture Text"],
-  "window-shot": ["File", "Capture Window"],
-  scrolling: ["File", "Scrolling Capture"],
-  history: ["File", "Screenshot History…"],
-  "recording-history": ["File", "Recording History…"],
-  bar: ["File", "Record or Capture…"],
+const MENU_KEYS: Record<MenuAction, readonly string[]> = {
+  recordDisplay: ["menu.file", "menu.file.recordDisplay"],
+  recordArea: ["menu.file", "menu.file.recordArea"],
+  stopRecording: ["menu.file", "menu.file.stopRecording"],
+  recordWindow: ["menu.file", "menu.file.recordWindow"],
+  captureFullscreen: ["menu.file", "menu.file.captureFullscreen"],
+  // "Capture Screenshot" opens the region overlay. A keystroke after it cancels the overlay.
+  captureArea: ["menu.file", "menu.file.captureScreenshot"],
+  captureText: ["menu.file", "menu.file.captureText"],
+  captureWindow: ["menu.file", "menu.file.captureWindow"],
+  scrollingCapture: ["menu.file", "menu.file.captureScrolling"],
+  screenshotHistory: ["menu.file", "menu.file.screenshotHistory"],
+  recordingHistory: ["menu.file", "menu.file.previousProjects"],
+  captureBar: ["menu.file", "menu.file.captureBar"],
 };
 
-export async function capture(what: Capture) {
+const PERMISSION_ERRORS = [
+  "not authorized to send apple events",
+  "not allowed to send apple events",
+  "-1743",
+  "assistive access",
+  "not allowed to send keystrokes",
+  "not authorized to send keystrokes",
+  "-1719",
+];
+
+function isPermissionError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return PERMISSION_ERRORS.some((needle) => message.includes(needle));
+}
+
+export function explainError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  if (lower.includes("apple events") || lower.includes("-1743")) {
+    return "Raycast is not allowed to control System Events. Allow it in System Settings ▸ Privacy & Security ▸ Automation.";
+  }
+  if (lower.includes("assistive access") || lower.includes("keystrokes") || lower.includes("-1719")) {
+    return "Raycast needs Accessibility access. Enable it in System Settings ▸ Privacy & Security ▸ Accessibility.";
+  }
+  return message;
+}
+
+async function appVersion(): Promise<string> {
   try {
+    return (
+      await run("plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", INFO_PLIST])
+    ).stdout.trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+async function readDefaults(args: string[]): Promise<string[]> {
+  try {
+    return parseLanguageList((await run("defaults", args)).stdout);
+  } catch {
+    return [];
+  }
+}
+
+async function readPreferredLanguages(): Promise<string[]> {
+  const perApp = await readDefaults(["read", "app.screenflare", "AppleLanguages"]);
+  if (perApp.length > 0) return perApp;
+  return readDefaults(["read", "-g", "AppleLanguages"]);
+}
+
+async function availableLanguages(): Promise<string[]> {
+  try {
+    const parsed: unknown = JSON.parse(
+      (await run("plutil", ["-extract", "CFBundleLocalizations", "json", "-o", "-", INFO_PLIST])).stdout,
+    );
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : ["en"];
+  } catch {
+    return ["en"];
+  }
+}
+
+async function readStrings(language: string): Promise<Record<string, string>> {
+  const { stdout } = await run("plutil", [
+    "-convert",
+    "json",
+    "-o",
+    "-",
+    path.join(RESOURCES, `${language}.lproj`, "Localizable.strings"),
+  ]);
+  const parsed: unknown = JSON.parse(stdout);
+  const strings: Record<string, string> = {};
+  if (typeof parsed === "object" && parsed !== null) {
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string") strings[key] = value;
+    }
+  }
+  return strings;
+}
+
+async function loadMenuItems(): Promise<Record<MenuAction, string[]>> {
+  const version = await appVersion();
+  const language = selectLanguage(await readPreferredLanguages(), await availableLanguages());
+  const english = await readStrings("en").catch((error: unknown) => {
+    throw new Error(`Screenflare ${version}: ${messageOf(error)}`);
+  });
+  const localized = language === "en" ? english : await readStrings(language).catch(() => english);
+  const items = {} as Record<MenuAction, string[]>;
+  for (const action of Object.keys(MENU_KEYS) as MenuAction[]) {
+    items[action] = MENU_KEYS[action].map((key) => {
+      const title = localized[key] || english[key];
+      if (!title) {
+        throw new Error(`Screenflare ${version} (${language}) has no menu title for "${key}"`);
+      }
+      return title;
+    });
+  }
+  return items;
+}
+
+let menuItemsPromise: Promise<Record<MenuAction, string[]>> | undefined;
+
+function resolveMenuItems(): Promise<Record<MenuAction, string[]>> {
+  if (!menuItemsPromise) {
+    menuItemsPromise = loadMenuItems().catch((error: unknown) => {
+      menuItemsPromise = undefined;
+      throw error;
+    });
+  }
+  return menuItemsPromise;
+}
+
+const runScript = (lines: string[]) =>
+  run(
+    "osascript",
+    lines.flatMap((line) => ["-e", line]),
+  );
+
+function menuPathLines(items: string[]): string[] {
+  const [bar, ...rest] = items;
+  return [
+    `tell application "System Events" to tell process "Screenflare"`,
+    `set target to menu bar item ${JSON.stringify(bar)} of menu bar 1`,
+    ...rest.map((item) => `set target to menu item ${JSON.stringify(item)} of menu 1 of target`),
+  ];
+}
+
+async function menu(action: MenuAction) {
+  const items = (await resolveMenuItems())[action];
+  const label = items.join(" ▸ ");
+  await runScript([
+    ...menuPathLines(items),
+    `if not (enabled of target) then error ${JSON.stringify(`${label} is unavailable right now`)}`,
+    `click target`,
+    `end tell`,
+  ]);
+}
+
+async function waitForMenu(action: MenuAction) {
+  const items = (await resolveMenuItems())[action];
+  const lines = [...menuPathLines(items), "return exists target", "end tell"];
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      const { stdout } = await runScript(lines);
+      if (stdout.trim() === "true") return;
+    } catch (error) {
+      if (isPermissionError(error)) throw error;
+    }
+    await sleep(200);
+  }
+  throw new Error(`Screenflare ${await appVersion()} did not show the menu "${items.join(" ▸ ")}"`);
+}
+
+export async function isRecording(): Promise<boolean> {
+  await ensureTrusted();
+  if (!(await isRunning())) return false;
+  await waitForMenu("stopRecording");
+  const items = (await resolveMenuItems()).stopRecording;
+  const { stdout } = await runScript([...menuPathLines(items), "return enabled of target", "end tell"]);
+  return stdout.trim() === "true";
+}
+
+export async function capture(action: MenuAction) {
+  try {
+    // Raycast must not appear in the capture.
+    await closeMainWindow();
     await ensureTrusted();
     await ensureRunning();
-    // "Capture Screenshot" is itself Screenflare's ⌘⇧4 item: pressing it opens
-    // the region overlay. Never follow it with a keystroke — Escape cancels the
-    // overlay the user is about to drag in.
-    await menu(...MENU_ITEMS[what]);
+    await waitForMenu(action);
+    await menu(action);
     return true;
   } catch (error) {
-    await showToast({ style: Toast.Style.Failure, title: "Screenflare failed", message: String(error) });
+    await showToast({ style: Toast.Style.Failure, title: "Screenflare failed", message: explainError(error) });
     return false;
   }
 }
@@ -117,17 +257,22 @@ export async function capture(what: Capture) {
 /** Screenflare's OCR copies to the clipboard when it finishes, so watch for it. */
 export async function captureText() {
   const before = await Clipboard.readText();
-  if (!(await capture("text"))) return;
-  for (let i = 0; i < 60; i++) {
+  if (!(await capture("captureText"))) return;
+  for (let poll = 0; poll < 120; poll++) {
     await sleep(500);
     const now = await Clipboard.readText();
-    if (now && now !== before) return; // No HUD confirms OCR, so the clipboard is the signal
+    if (now && now !== before) return;
   }
-  await menu("File", "Screenshot History…"); // nothing copied: let the user grab it by hand
+  await showToast({
+    style: Toast.Style.Failure,
+    title: "No new text was copied",
+    message: "Screenflare may still be open. Text already on the clipboard is unchanged.",
+  });
 }
 
 export type Recording = { name: string; dir: string; meta: RecordingMeta };
 export type RecordingMeta = {
+  version: number;
   createdAt: string;
   duration: number;
   mode: string;
@@ -142,27 +287,115 @@ export type Screenshot = {
   meta: ScreenshotMeta;
 };
 export type ScreenshotMeta = {
+  version: number;
   createdAt: string;
   kind: string;
   pixelWidth: number;
   pixelHeight: number;
   exportPath?: string;
 };
+export type Library<T> = { items: T[]; problems: string[]; error?: string };
 
-const prefs = getPreferenceValues<{ recordingsFolder?: string; screenshotsFolder?: string }>();
+type ReadResult = { ok: true; value: unknown } | { ok: false; reason: "missing" | "invalid"; detail?: string };
+type ParseResult<T> =
+  { ok: true; value: T } | { ok: false; missing: true } | { ok: false; missing: false; problem: string };
+type ParseProblem = { ok: false; missing: false; problem: string };
+
+const prefs = getPreferenceValues<Preferences>();
 const expand = (p: string) => p.replace(/^~(?=$|\/)/, homedir());
 const savedFolder = (pref: string | undefined, fallback: string) =>
   pref?.trim() ? expand(pref.trim()) : path.join(homedir(), "Screenflare", fallback);
 
-export const recordingsFolder = savedFolder(prefs.recordingsFolder, "recordings");
-export const screenshotsFolder = savedFolder(prefs.screenshotsFolder, "screenshots");
+const recordingsFolder = savedFolder(prefs.recordingsFolder, "recordings");
+const screenshotsFolder = savedFolder(prefs.screenshotsFolder, "screenshots");
 
-async function readJSON<T>(file: string): Promise<T | undefined> {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+function invalid(problem: string): ParseProblem {
+  return { ok: false, missing: false, problem };
+}
+
+function unsupportedVersion(version: unknown): string {
+  return version === undefined ? "meta.json has no version" : `unsupported meta version ${String(version)}`;
+}
+
+async function readJSON(file: string): Promise<ReadResult> {
+  let text: string;
   try {
-    return JSON.parse(await fs.readFile(file, "utf8")) as T;
-  } catch {
-    return undefined; // half-written or missing: skip the entry rather than the whole library
+    text = await fs.readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: false, reason: "missing" };
+    return { ok: false, reason: "invalid", detail: messageOf(error) };
   }
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch (error) {
+    return { ok: false, reason: "invalid", detail: messageOf(error) };
+  }
+}
+
+async function readDirs(dir: string): Promise<{ dirs: string[]; error?: string }> {
+  if (!path.isAbsolute(dir)) return { dirs: [], error: `Folder path is not absolute: ${dir}` };
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return { dirs: entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name)) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { dirs: [], error: `Folder not found: ${dir}` };
+    return { dirs: [], error: `${messageOf(error)} (${dir})` };
+  }
+}
+
+function parseRecordingMeta(read: ReadResult): ParseResult<RecordingMeta> {
+  if (!read.ok) {
+    return read.reason === "missing" ? { ok: false, missing: true } : invalid(read.detail ?? "meta.json is unreadable");
+  }
+  const raw = read.value;
+  if (!isRecord(raw)) return invalid("meta.json is not an object");
+  if (raw.version !== 1) return invalid(unsupportedVersion(raw.version));
+  if (typeof raw.createdAt !== "string") return invalid("createdAt is missing or not a string");
+  if (typeof raw.duration !== "number") return invalid("duration is missing or not a number");
+  if (typeof raw.mode !== "string") return invalid("mode is missing or not a string");
+  if (typeof raw.sourceName !== "string") return invalid("sourceName is missing or not a string");
+  if (typeof raw.pixelWidth !== "number") return invalid("pixelWidth is missing or not a number");
+  if (typeof raw.pixelHeight !== "number") return invalid("pixelHeight is missing or not a number");
+  return {
+    ok: true,
+    value: {
+      version: 1,
+      createdAt: raw.createdAt,
+      duration: raw.duration,
+      mode: raw.mode,
+      sourceName: raw.sourceName,
+      pixelWidth: raw.pixelWidth,
+      pixelHeight: raw.pixelHeight,
+    },
+  };
+}
+
+function parseScreenshotMeta(read: ReadResult): ParseResult<ScreenshotMeta> {
+  if (!read.ok) {
+    return read.reason === "missing" ? { ok: false, missing: true } : invalid(read.detail ?? "meta.json is unreadable");
+  }
+  const raw = read.value;
+  if (!isRecord(raw)) return invalid("meta.json is not an object");
+  if (raw.version !== 1) return invalid(unsupportedVersion(raw.version));
+  if (typeof raw.createdAt !== "string") return invalid("createdAt is missing or not a string");
+  if (typeof raw.kind !== "string") return invalid("kind is missing or not a string");
+  if (typeof raw.pixelWidth !== "number") return invalid("pixelWidth is missing or not a number");
+  if (typeof raw.pixelHeight !== "number") return invalid("pixelHeight is missing or not a number");
+  if (raw.exportPath !== undefined && typeof raw.exportPath !== "string") return invalid("exportPath is not a string");
+  return {
+    ok: true,
+    value: {
+      version: 1,
+      createdAt: raw.createdAt,
+      kind: raw.kind,
+      pixelWidth: raw.pixelWidth,
+      pixelHeight: raw.pixelHeight,
+      exportPath: raw.exportPath,
+    },
+  };
 }
 
 const exists = (file: string) =>
@@ -171,36 +404,41 @@ const exists = (file: string) =>
     () => false,
   );
 
-const readDirs = (dir: string) =>
-  fs.readdir(dir, { withFileTypes: true }).then(
-    (e) => e.filter((d) => d.isDirectory()).map((d) => path.join(dir, d.name)),
-    () => [],
-  );
-
 const byNewest = <T extends { createdAt: string }>(a: T, b: T) => b.createdAt.localeCompare(a.createdAt);
 
 /** Screenflare's history.json only indexes recordings, so read the library off disk. */
-export async function listRecordings(): Promise<Recording[]> {
-  const entries = await Promise.all(
-    (await readDirs(recordingsFolder)).map(async (dir) => {
-      const meta = await readJSON<RecordingMeta>(path.join(dir, "meta.json"));
-      return meta?.createdAt ? { name: path.basename(dir, ".screenflare"), dir, meta } : undefined;
-    }),
-  );
-  return entries.filter((r): r is Recording => !!r).sort((a, b) => byNewest(a.meta, b.meta));
+export async function listRecordings(): Promise<Library<Recording>> {
+  const { dirs, error } = await readDirs(recordingsFolder);
+  const items: Recording[] = [];
+  const problems: string[] = [];
+  for (const dir of dirs) {
+    const meta = parseRecordingMeta(await readJSON(path.join(dir, "meta.json")));
+    if (!meta.ok) {
+      if (!meta.missing) problems.push(`${path.basename(dir)}: ${meta.problem}`);
+      continue;
+    }
+    items.push({ name: path.basename(dir, ".screenflare"), dir, meta: meta.value });
+  }
+  items.sort((a, b) => byNewest(a.meta, b.meta));
+  return { items, problems, error };
 }
 
-export async function listScreenshots(): Promise<Screenshot[]> {
-  const entries = await Promise.all(
-    (await readDirs(screenshotsFolder)).map(async (dir) => {
-      const meta = await readJSON<ScreenshotMeta>(path.join(dir, "meta.json"));
-      if (!meta?.createdAt) return undefined;
-      const thumb = path.join(dir, "thumbnail.png");
-      const image = meta.exportPath && (await exists(meta.exportPath)) ? meta.exportPath : thumb;
-      return { dir, image, thumb, meta };
-    }),
-  );
-  return entries.filter((s): s is Screenshot => !!s).sort((a, b) => byNewest(a.meta, b.meta));
+export async function listScreenshots(): Promise<Library<Screenshot>> {
+  const { dirs, error } = await readDirs(screenshotsFolder);
+  const items: Screenshot[] = [];
+  const problems: string[] = [];
+  for (const dir of dirs) {
+    const meta = parseScreenshotMeta(await readJSON(path.join(dir, "meta.json")));
+    if (!meta.ok) {
+      if (!meta.missing) problems.push(`${path.basename(dir)}: ${meta.problem}`);
+      continue;
+    }
+    const thumb = path.join(dir, "thumbnail.png");
+    const image = meta.value.exportPath && (await exists(meta.value.exportPath)) ? meta.value.exportPath : thumb;
+    items.push({ dir, image, thumb, meta: meta.value });
+  }
+  items.sort((a, b) => byNewest(a.meta, b.meta));
+  return { items, problems, error };
 }
 
 /** Opens the recording in Screenflare's editor, revealing it in Finder if the app refuses. */
