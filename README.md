@@ -37,6 +37,20 @@ Captures still open in Screenflare's editor when they need your input (a region 
 duration, resolution and thumbnail. Both folder locations can be overridden in the extension preferences if you moved
 Screenflare's library.
 
+## Install
+
+The extension isn't in the Raycast Store — install it from source:
+
+```sh
+git clone https://github.com/kvoon3/raycast-screenflare.git
+cd raycast-screenflare
+npm install
+npm run dev     # loads the extension into Raycast locally
+```
+
+`npm run dev` keeps running and installs the extension into your local Raycast under **Screenflare**. Grant Raycast
+Accessibility permission on first capture — see *How it works* above.
+
 ## Development
 
 ```sh

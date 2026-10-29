@@ -72,6 +72,7 @@ export const isRecording = async () =>
 
 type Capture =
   | "recording"
+  | "record-area"
   | "stop-recording"
   | "window"
   | "screenshot"
@@ -85,6 +86,7 @@ type Capture =
 
 const MENU_ITEMS: Record<Capture, string[]> = {
   recording: ["File", "Record Display"],
+  "record-area": ["File", "Record Area"],
   "stop-recording": ["File", "Stop Recording"],
   window: ["File", "Record Window"],
   screenshot: ["File", "Capture Fullscreen"],
@@ -97,16 +99,13 @@ const MENU_ITEMS: Record<Capture, string[]> = {
   bar: ["File", "Record or Capture…"],
 };
 
-/**
- * Screenflare's own "Capture Screenshot" menu item raises the region-selection
- * overlay itself, so no synthetic ⌘⇧4 is needed. This also keeps the command
- * independent of whether macOS or Screenflare owns the screenshot shortcuts.
- */
-
 export async function capture(what: Capture) {
   try {
     await ensureTrusted();
     await ensureRunning();
+    // "Capture Screenshot" is itself Screenflare's ⌘⇧4 item: pressing it opens
+    // the region overlay. Never follow it with a keystroke — Escape cancels the
+    // overlay the user is about to drag in.
     await menu(...MENU_ITEMS[what]);
     return true;
   } catch (error) {
