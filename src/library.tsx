@@ -149,15 +149,15 @@ function EmptyLibrary({ result, view }: { result?: Library<Recording> | Library<
 function CaptureActions({ onRefresh }: { onRefresh: () => void }) {
   return (
     <ActionPanel.Section>
-      <Action title="Capture Area Screenshot" icon={Icon.Crop} onAction={() => capture("captureArea")} />
-      <Action title="Capture Fullscreen Screenshot" icon={Icon.Desktop} onAction={() => capture("captureFullscreen")} />
-      <Action title="Capture Window Screenshot" icon={Icon.AppWindow} onAction={() => capture("captureWindow")} />
-      <Action title="Scrolling Capture" icon={Icon.ArrowDown} onAction={() => capture("scrollingCapture")} />
+      <Action title="Capture Area Screenshot" icon={Icon.Crop} onAction={() => capture("capture-area")} />
+      <Action title="Capture Fullscreen Screenshot" icon={Icon.Desktop} onAction={() => capture("capture-fullscreen")} />
+      <Action title="Capture Window Screenshot" icon={Icon.AppWindow} onAction={() => capture("capture-window")} />
+      <Action title="Scrolling Capture" icon={Icon.ArrowDown} onAction={() => capture("capture-scrolling")} />
       <Action title="Capture Text" icon={Icon.Text} onAction={captureText} />
-      <Action title="Record Display" icon={Icon.Video} onAction={() => capture("recordDisplay")} />
-      <Action title="Show Capture Bar" icon={Icon.Window} onAction={() => capture("captureBar")} />
-      <Action title="Screenshot History" icon={Icon.Image} onAction={() => capture("screenshotHistory")} />
-      <Action title="Recording History" icon={Icon.Video} onAction={() => capture("recordingHistory")} />
+      <Action title="Record Display" icon={Icon.Video} onAction={() => capture("record-display")} />
+      <Action title="Show Capture Bar" icon={Icon.Window} onAction={() => capture("record-or-capture")} />
+      <Action title="Screenshot History" icon={Icon.Image} onAction={() => capture("screenshot-history")} />
+      <Action title="Recording History" icon={Icon.Video} onAction={() => capture("recording-history")} />
       <Action
         title="Refresh Library"
         icon={Icon.ArrowClockwise}

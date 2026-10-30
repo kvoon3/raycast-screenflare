@@ -1,273 +1,219 @@
-import { Clipboard, closeMainWindow, getPreferenceValues, showToast, Toast } from "@raycast/api";
+import { Clipboard, closeMainWindow, getPreferenceValues, showHUD, showToast, Toast } from "@raycast/api";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { parseLanguageList, selectLanguage } from "./menu-locale";
 
 const run = promisify(execFile);
 
-const APP = "/Applications/Screenflare.app";
-const INFO_PLIST = path.join(APP, "Contents/Info.plist");
-const RESOURCES = path.join(APP, "Contents/Resources");
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
-/** Screenflare needs Accessibility to be driven from outside; fail before the menu press with a clear message. */
-async function ensureTrusted() {
-  const { stdout } = await run("osascript", ["-e", `tell application "System Events" to return UI elements enabled`]);
-  if (stdout.trim() !== "true") {
-    throw new Error(
-      "Raycast needs Accessibility access. Enable it in System Settings ▸ Privacy & Security ▸ Accessibility.",
-    );
-  }
-}
-
-async function ensureRunning() {
-  if (await isRunning()) return;
-  await run("open", ["-g", "-a", APP]);
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (await isRunning()) return;
-    await sleep(200);
-  }
-  throw new Error(`Screenflare did not start from ${APP}`);
-}
-
-const isRunning = async () =>
-  (
-    await run("osascript", [
-      "-e",
-      `tell application "System Events" to return (count of (every process whose bundle identifier is "app.screenflare")) > 0`,
-    ])
-  ).stdout.trim() === "true";
-
-type MenuAction =
-  | "recordDisplay"
-  | "recordArea"
-  | "stopRecording"
-  | "recordWindow"
-  | "captureFullscreen"
-  | "captureArea"
-  | "captureText"
-  | "captureWindow"
-  | "scrollingCapture"
-  | "screenshotHistory"
-  | "recordingHistory"
-  | "captureBar";
-
 /**
- * Screenflare has no automation API, so its menus are the only hook. Titles are
- * read from the app's own localization rather than hardcoded English.
+ * ScreenflareX owns the control surface: an injected library runs actions inside the app
+ * and answers over `screenflarex://` and a local socket. Nothing here touches the menu
+ * bar from the outside, so there is no Accessibility grant, no AppleScript, and no
+ * synthetic clicks — `open screenflarex://capture-window` is the whole call.
+ *
+ * Two commands still need a *value* back rather than a fire-and-forget: `state` (is it
+ * recording?) and the clipboard wait for Capture Text. Those go through the app's own
+ * CLI, which speaks to the same controller and returns JSON.
  */
-const MENU_KEYS: Record<MenuAction, readonly string[]> = {
-  recordDisplay: ["menu.file", "menu.file.recordDisplay"],
-  recordArea: ["menu.file", "menu.file.recordArea"],
-  stopRecording: ["menu.file", "menu.file.stopRecording"],
-  recordWindow: ["menu.file", "menu.file.recordWindow"],
-  captureFullscreen: ["menu.file", "menu.file.captureFullscreen"],
-  // "Capture Screenshot" opens the region overlay. A keystroke after it cancels the overlay.
-  captureArea: ["menu.file", "menu.file.captureScreenshot"],
-  captureText: ["menu.file", "menu.file.captureText"],
-  captureWindow: ["menu.file", "menu.file.captureWindow"],
-  scrollingCapture: ["menu.file", "menu.file.captureScrolling"],
-  screenshotHistory: ["menu.file", "menu.file.screenshotHistory"],
-  recordingHistory: ["menu.file", "menu.file.previousProjects"],
-  captureBar: ["menu.file", "menu.file.captureBar"],
+export type ActionId =
+  | "capture-area"
+  | "capture-window"
+  | "capture-fullscreen"
+  | "capture-scrolling"
+  | "capture-text"
+  | "record-display"
+  | "record-window"
+  | "record-area"
+  | "record-or-capture"
+  | "stop-recording"
+  | "pause-recording"
+  | "new-recording"
+  | "open-last-recording"
+  | "screenshot-history"
+  | "recording-history";
+
+export type CtlState = {
+  running: boolean;
+  recording: boolean;
+  paused: boolean;
+  actions?: { id: string; enabled: boolean; title: string }[];
 };
 
-const PERMISSION_ERRORS = [
-  "not authorized to send apple events",
-  "not allowed to send apple events",
-  "-1743",
-  "assistive access",
-  "not allowed to send keystrokes",
-  "not authorized to send keystrokes",
-  "-1719",
-];
+type CtlOk = { ok: true; state?: CtlState; artifact?: string | null; kind?: string };
+type CtlError = { ok: false; error: { code?: string; message: string } };
+type CtlResult = CtlOk | CtlError;
 
-function isPermissionError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return PERMISSION_ERRORS.some((needle) => message.includes(needle));
+const prefs = getPreferenceValues<Preferences>();
+
+const APP = "/Applications/ScreenflareX.app";
+const DEFAULT_BUNDLE = path.join(homedir(), "Applications/ScreenflareX.app");
+
+/** The copy `patches/prepare.sh` assembles: preference, env, then the usual two places. */
+function bundleCandidates(): string[] {
+  return [prefs.screenflarexApp?.trim(), process.env.SCREENFLAREX_APP, DEFAULT_BUNDLE, APP].filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
+}
+
+let cliPathPromise: Promise<string> | undefined;
+
+async function cliPath(): Promise<string> {
+  if (!cliPathPromise) {
+    cliPathPromise = (async () => {
+      for (const bundle of bundleCandidates()) {
+        if (!path.isAbsolute(bundle)) continue;
+        const candidate = path.join(bundle, "Contents/MacOS/screenflarexctl");
+        try {
+          await fs.access(candidate);
+          return candidate;
+        } catch {
+          continue;
+        }
+      }
+      throw new Error("ScreenflareX was not found. Run `make prepare` in your screenflarex checkout, or set its app path in this extension's preferences.");
+    })().catch((error: unknown) => {
+      cliPathPromise = undefined;
+      throw error;
+    });
+  }
+  return cliPathPromise;
+}
+
+async function ctl(command: string): Promise<CtlResult> {
+  const binary = await cliPath();
+  const { stdout } = await run(binary, [command], { maxBuffer: 4 * 1024 * 1024 }).catch((error: unknown) => {
+    // The CLI prints JSON even when the app refuses, and exits non-zero.
+    const failed = error as { stdout?: string; stderr?: string };
+    if (failed.stdout?.trim()) return { stdout: failed.stdout, stderr: failed.stderr ?? "" };
+    throw new Error(failed.stderr?.trim() || String(error));
+  });
+  const line = stdout.trim().split("\n").filter(Boolean).pop();
+  if (!line) throw new Error("screenflarexctl produced no output");
+  try {
+    return JSON.parse(line) as CtlResult;
+  } catch {
+    throw new Error(`screenflarexctl produced unreadable output: ${line.slice(0, 200)}`);
+  }
+}
+
+/** Fire an action through the app's URL scheme. Resolves once Launch Services accepted it. */
+async function fire(action: ActionId | `state`): Promise<void> {
+  await run("/usr/bin/open", [`screenflarex://${action}`]);
 }
 
 export function explainError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
-  if (lower.includes("apple events") || lower.includes("-1743")) {
-    return "Raycast is not allowed to control System Events. Allow it in System Settings ▸ Privacy & Security ▸ Automation.";
-  }
-  if (lower.includes("assistive access") || lower.includes("keystrokes") || lower.includes("-1719")) {
-    return "Raycast needs Accessibility access. Enable it in System Settings ▸ Privacy & Security ▸ Accessibility.";
+  if (message.includes("was not found")) {
+    return "ScreenflareX is not installed yet: build it with `make prepare` in ~/i/screenflarex.";
   }
   return message;
 }
 
-async function appVersion(): Promise<string> {
+/** Whether a ScreenflareX process is up; a URL launch would otherwise start it silently. */
+async function running(): Promise<boolean> {
   try {
-    return (
-      await run("plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", INFO_PLIST])
-    ).stdout.trim();
+    const { stdout } = await run("/usr/bin/pgrep", ["-f", "ScreenflareX.app/Contents/MacOS/Screenflare.real"]);
+    return stdout.trim().length > 0;
   } catch {
-    return "unknown";
-  }
-}
-
-async function readDefaults(args: string[]): Promise<string[]> {
-  try {
-    return parseLanguageList((await run("defaults", args)).stdout);
-  } catch {
-    return [];
-  }
-}
-
-async function readPreferredLanguages(): Promise<string[]> {
-  const perApp = await readDefaults(["read", "app.screenflare", "AppleLanguages"]);
-  if (perApp.length > 0) return perApp;
-  return readDefaults(["read", "-g", "AppleLanguages"]);
-}
-
-async function availableLanguages(): Promise<string[]> {
-  try {
-    const parsed: unknown = JSON.parse(
-      (await run("plutil", ["-extract", "CFBundleLocalizations", "json", "-o", "-", INFO_PLIST])).stdout,
-    );
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : ["en"];
-  } catch {
-    return ["en"];
-  }
-}
-
-async function readStrings(language: string): Promise<Record<string, string>> {
-  const { stdout } = await run("plutil", [
-    "-convert",
-    "json",
-    "-o",
-    "-",
-    path.join(RESOURCES, `${language}.lproj`, "Localizable.strings"),
-  ]);
-  const parsed: unknown = JSON.parse(stdout);
-  const strings: Record<string, string> = {};
-  if (typeof parsed === "object" && parsed !== null) {
-    for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value === "string") strings[key] = value;
-    }
-  }
-  return strings;
-}
-
-async function loadMenuItems(): Promise<Record<MenuAction, string[]>> {
-  const version = await appVersion();
-  const language = selectLanguage(await readPreferredLanguages(), await availableLanguages());
-  const english = await readStrings("en").catch((error: unknown) => {
-    throw new Error(`Screenflare ${version}: ${messageOf(error)}`);
-  });
-  const localized = language === "en" ? english : await readStrings(language).catch(() => english);
-  const items = {} as Record<MenuAction, string[]>;
-  for (const action of Object.keys(MENU_KEYS) as MenuAction[]) {
-    items[action] = MENU_KEYS[action].map((key) => {
-      const title = localized[key] || english[key];
-      if (!title) {
-        throw new Error(`Screenflare ${version} (${language}) has no menu title for "${key}"`);
-      }
-      return title;
-    });
-  }
-  return items;
-}
-
-let menuItemsPromise: Promise<Record<MenuAction, string[]>> | undefined;
-
-function resolveMenuItems(): Promise<Record<MenuAction, string[]>> {
-  if (!menuItemsPromise) {
-    menuItemsPromise = loadMenuItems().catch((error: unknown) => {
-      menuItemsPromise = undefined;
-      throw error;
-    });
-  }
-  return menuItemsPromise;
-}
-
-const runScript = (lines: string[]) =>
-  run(
-    "osascript",
-    lines.flatMap((line) => ["-e", line]),
-  );
-
-function menuPathLines(items: string[]): string[] {
-  const [bar, ...rest] = items;
-  return [
-    `tell application "System Events" to tell process "Screenflare"`,
-    `set target to menu bar item ${JSON.stringify(bar)} of menu bar 1`,
-    ...rest.map((item) => `set target to menu item ${JSON.stringify(item)} of menu 1 of target`),
-  ];
-}
-
-async function menu(action: MenuAction) {
-  const items = (await resolveMenuItems())[action];
-  const label = items.join(" ▸ ");
-  await runScript([
-    ...menuPathLines(items),
-    `if not (enabled of target) then error ${JSON.stringify(`${label} is unavailable right now`)}`,
-    `click target`,
-    `end tell`,
-  ]);
-}
-
-async function waitForMenu(action: MenuAction) {
-  const items = (await resolveMenuItems())[action];
-  const lines = [...menuPathLines(items), "return exists target", "end tell"];
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try {
-      const { stdout } = await runScript(lines);
-      if (stdout.trim() === "true") return;
-    } catch (error) {
-      if (isPermissionError(error)) throw error;
-    }
-    await sleep(200);
-  }
-  throw new Error(`Screenflare ${await appVersion()} did not show the menu "${items.join(" ▸ ")}"`);
-}
-
-export async function isRecording(): Promise<boolean> {
-  await ensureTrusted();
-  if (!(await isRunning())) return false;
-  await waitForMenu("stopRecording");
-  const items = (await resolveMenuItems()).stopRecording;
-  const { stdout } = await runScript([...menuPathLines(items), "return enabled of target", "end tell"]);
-  return stdout.trim() === "true";
-}
-
-export async function capture(action: MenuAction) {
-  try {
-    // Raycast must not appear in the capture.
-    await closeMainWindow();
-    await ensureTrusted();
-    await ensureRunning();
-    await waitForMenu(action);
-    await menu(action);
-    return true;
-  } catch (error) {
-    await showToast({ style: Toast.Style.Failure, title: "Screenflare failed", message: explainError(error) });
     return false;
   }
 }
 
-/** Screenflare's OCR copies to the clipboard when it finishes, so watch for it. */
-export async function captureText() {
-  const before = await Clipboard.readText();
-  if (!(await capture("captureText"))) return;
-  for (let poll = 0; poll < 120; poll++) {
-    await sleep(500);
-    const now = await Clipboard.readText();
-    if (now && now !== before) return;
+async function ensureRunning(): Promise<void> {
+  if (await running()) return;
+  const bundle = bundleCandidates().find((candidate) => path.isAbsolute(candidate)) ?? DEFAULT_BUNDLE;
+  await run("/usr/bin/open", ["-a", bundle]);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (await running()) return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  await showToast({
-    style: Toast.Style.Failure,
-    title: "No new text was copied",
-    message: "Screenflare may still be open. Text already on the clipboard is unchanged.",
-  });
+  throw new Error("ScreenflareX did not start");
+}
+
+export async function state(): Promise<CtlState> {
+  const result = await ctl("state");
+  if (!result.ok) throw new Error(result.error.message);
+  return { running: true, recording: false, paused: false, ...(result.state ?? {}) };
+}
+
+export async function isRecording(): Promise<boolean> {
+  if (!(await running())) return false;
+  return (await state()).recording;
+}
+
+/** Interactive actions open an overlay; they report nothing, so the HUD is generic. */
+const INTERACTIVE: ReadonlySet<ActionId> = new Set([
+  "capture-area",
+  "capture-window",
+  "capture-scrolling",
+  "record-window",
+  "record-area",
+  "record-or-capture",
+  "screenshot-history",
+  "recording-history",
+  "open-last-recording",
+]);
+
+export async function capture(action: ActionId): Promise<boolean> {
+  try {
+    await closeMainWindow({ clearRootSearch: true });
+    await ensureRunning();
+    await fire(action);
+    await showHUD(INTERACTIVE.has(action) ? "ScreenflareX: overlay open (Esc to cancel)" : "ScreenflareX: done");
+    return true;
+  } catch (error) {
+    await showToast({ style: Toast.Style.Failure, title: "ScreenflareX failed", message: explainError(error) });
+    return false;
+  }
+}
+
+/** Screenflare copies recognised text to the clipboard; the URL call cannot return it. */
+export async function captureText(): Promise<boolean> {
+  try {
+    await closeMainWindow({ clearRootSearch: true });
+    await ensureRunning();
+    const before = (await Clipboard.readText()) ?? "";
+    await fire("capture-text");
+    for (let poll = 0; poll < 120; poll++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const now = (await Clipboard.readText()) ?? "";
+      if (now && now !== before) {
+        await showHUD(`Copied ${now.length} characters`);
+        return true;
+      }
+    }
+    await showToast({ style: Toast.Style.Failure, title: "No text was copied", message: "Nothing was recognised." });
+    return false;
+  } catch (error) {
+    await showToast({ style: Toast.Style.Failure, title: "Capture Text failed", message: explainError(error) });
+    return false;
+  }
+}
+
+/** Stop the active recording, or start a display recording. */
+export async function toggleRecording(): Promise<"started" | "stopped" | "failed"> {
+  let recording: boolean;
+  try {
+    recording = await isRecording();
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Could not read ScreenflareX's state",
+      message: explainError(error),
+    });
+    return "failed";
+  }
+  try {
+    await closeMainWindow({ clearRootSearch: true });
+    await fire(recording ? "stop-recording" : "record-display");
+    await showHUD(recording ? "Stopping recording" : "Recording");
+    return recording ? "stopped" : "started";
+  } catch (error) {
+    await showToast({ style: Toast.Style.Failure, title: "ScreenflareX failed", message: explainError(error) });
+    return "failed";
+  }
 }
 
 export type Recording = { name: string; dir: string; meta: RecordingMeta };
@@ -301,7 +247,6 @@ type ParseResult<T> =
   { ok: true; value: T } | { ok: false; missing: true } | { ok: false; missing: false; problem: string };
 type ParseProblem = { ok: false; missing: false; problem: string };
 
-const prefs = getPreferenceValues<Preferences>();
 const expand = (p: string) => p.replace(/^~(?=$|\/)/, homedir());
 const savedFolder = (pref: string | undefined, fallback: string) =>
   pref?.trim() ? expand(pref.trim()) : path.join(homedir(), "Screenflare", fallback);
@@ -326,12 +271,12 @@ async function readJSON(file: string): Promise<ReadResult> {
     text = await fs.readFile(file, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: false, reason: "missing" };
-    return { ok: false, reason: "invalid", detail: messageOf(error) };
+    return { ok: false, reason: "invalid", detail: String(error) };
   }
   try {
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch (error) {
-    return { ok: false, reason: "invalid", detail: messageOf(error) };
+    return { ok: false, reason: "invalid", detail: String(error) };
   }
 }
 
@@ -342,7 +287,7 @@ async function readDirs(dir: string): Promise<{ dirs: string[]; error?: string }
     return { dirs: entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name)) };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { dirs: [], error: `Folder not found: ${dir}` };
-    return { dirs: [], error: `${messageOf(error)} (${dir})` };
+    return { dirs: [], error: `${String(error)} (${dir})` };
   }
 }
 
@@ -441,16 +386,13 @@ export async function listScreenshots(): Promise<Library<Screenshot>> {
   return { items, problems, error };
 }
 
-/** Opens the recording in Screenflare's editor, revealing it in Finder if the app refuses. */
+/** Opens the recording in the editor, revealing it in Finder if the app refuses. */
 export async function openRecording(dir: string) {
+  const bundle = bundleCandidates()[0] ?? DEFAULT_BUNDLE;
   try {
-    await run("open", ["-a", APP, dir]);
+    await run("/usr/bin/open", ["-a", bundle, dir]);
   } catch {
-    await showToast({
-      style: Toast.Style.Failure,
-      title: "Screenflare could not open it",
-      message: "Revealed in Finder",
-    });
-    await run("open", ["-R", dir]);
+    await showToast({ style: Toast.Style.Failure, title: "Could not open it", message: "Revealed in Finder" });
+    await run("/usr/bin/open", ["-R", dir]);
   }
 }

@@ -114,6 +114,13 @@
       "description": "Where Screenflare stores screenshots. Leave empty for ~/Screenflare/screenshots",
       "type": "textfield",
       "required": false
+    },
+    {
+      "name": "screenflarexApp",
+      "title": "ScreenflareX App",
+      "description": "Optional. Path to the ScreenflareX copy. Leave empty for ~/Applications/ScreenflareX.app",
+      "type": "textfield",
+      "required": false
     }
   ],
   "dependencies": {

@@ -1,5 +1,5 @@
 import { capture } from "./screenflare";
 
 export default async function Command() {
-  await capture("captureBar");
+  await capture("record-or-capture");
 }

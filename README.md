@@ -1,6 +1,10 @@
 # Screenflare Capture
 
-A [Raycast](https://raycast.com) extension for [Screenflare](https://screenflare.app). Take screenshots and screen
+A [Raycast](https://raycast.com) extension for [Screenflare](https://screenflare.app), driven through
+[ScreenflareX](https://github.com/kvoon3/screenflarex): the app's own control surface, so this
+extension needs **no Accessibility permission** and never touches the menu bar from outside.
+Every command is one `open screenflarex://…`; the two that need a value back (recording state,
+OCR text) ask the app's CLI. Take screenshots and screen
 recordings, and browse your Screenflare library, without leaving Raycast.
 
 ## Commands
